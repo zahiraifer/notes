@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en" dir="ltr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Safe to Call Twice: Designing AI-Agent Tools for Retries, Duplicates and Partial Failure</title><meta name="description" content="Seven design rules that make an AI agent's write tools safe to retry: honest completion, ordered side effects, one writer, stateless servers, addressed edits."><meta name="author" content="Zahi Raifer">
+<link rel="canonical" href="https://zahiraifer.onrender.com/safe-to-call-twice/"><meta property="og:title" content="Safe to Call Twice: Designing AI-Agent Tools for Retries, Duplicates and Partial Failure"><meta property="og:type" content="article">
+<style>body{max-width:720px;margin:2rem auto;padding:0 1rem;font:18px/1.65 Georgia,serif;color:#222}h1,h2{font-family:system-ui,sans-serif;line-height:1.25}code{background:#f3f3f3;padding:0 .2em}a{color:#0645ad}</style></head><body><article><h1>Safe to Call Twice: Designing AI-Agent Tools for Retries, Duplicates and Partial Failure</h1>
+<p><em>By Zahi Raifer</em></p>
+<p>Every tool you hand to an AI agent will eventually be called twice. A connection drops after the server finished its work, a client times out a little too early, or the model decides to try again. With an agent calling tools in a loop, a double submit is something you design for from day one.</p>
+<p>I work on Orivox, an AI website builder for small businesses, where an AI edits live websites for real owners. One of its two front doors is a remote MCP server, so an owner can build and edit their site from their own Claude. That means a model we do not control calls our tools over the internet. This post is about the small set of decisions that make those calls safe to repeat, and safe to fail halfway.</p>
+<h2>Start from the uncomfortable question</h2>
+<p>For every tool, I now ask one question before anything else: <em>if this call is made twice, or dies in the middle, what does the site look like afterwards?</em></p>
+<p>For a read-only tool the answer is boring, and boring is the goal. For a tool that writes, there are three outcomes to avoid: a duplicate (two projects where the owner asked for one), a phantom (the agent says it worked when nothing changed), and a tangle (two writes interleaved on the same files). Each design choice below closes one of those doors.</p>
+<h2>1. Report completion honestly, even when bookkeeping fails</h2>
+<p>The rule that surprised people most when we wrote it down: <strong>a completed write is always reported as done.</strong> If the files have been written and a later step, such as usage metering, fails, the MCP tool still returns success.</p>
+<p>That can look like hiding an error. It is the opposite. The agent on the other side has no way to know which internal step failed. If we return an error after the real work is already on disk, the most reasonable thing a model can do is call the tool again, and now there are two projects. Returning success describes the world correctly: the thing the caller asked for exists. The metering problem is ours to fix on our side, not something to push back to a client that will "fix" it by repeating the work.</p>
+<h2>2. Put the irreversible step in the right place</h2>
+<p>Creating a project through the connector is not one action but a short sequence: check quota, create the project record in the web app, create the files in the editing service, finalize, then record usage.</p>
+<p>The order is the design. The cheap check comes first, so a call that should be refused is refused before anything is created. The business record and the files come next. Usage comes last, after the thing the owner asked for really exists. That is what makes rule 1 possible: by the time the only remaining step is bookkeeping, the honest answer to the caller is already "done."</p>
+<h2>3. One writer per project, for the whole turn</h2>
+<p>Duplicates are one problem; interleaving is another. Orivox keeps a single project lock in Redis, held for a whole turn by whoever is writing: an edit, a manual commit, a site copy or a background job. Two changes can never interleave on the same site.</p>
+<p>The point for retries is that a repeated request does not race the original. It waits its turn, and when it runs, it runs against the site as the first request left it. Pair that with another of our save rules, <em>a page is read before it is written</em>, and a second call is always based on the current page, not on a stale copy someone else's turn already replaced.</p>
+<h2>4. Keep the server forgetful</h2>
+<p>The MCP server keeps no session state between calls, so any instance can serve any request. That sounds like an operations detail, but it matters for retries: there is no server-side conversation that a retry can land in the middle of, or that a restart can lose. A restart costs at most the one request in flight, and the next attempt starts clean.</p>
+<p>Edit turns and other long work run through job queues backed by Redis, and a web request never waits on a model. A slow model call cannot hold a request open long enough to invite a timeout-and-retry in the first place.</p>
+<h2>5. Make the unit of change small and addressed</h2>
+<p>Edits arrive as a list of operations from a grammar of 14 verbs, such as <code>set_text</code>, <code>add_class</code>, <code>insert_after</code> and <code>remove</code>, and every operation names its target by a stable id like <code>[data-ai-id='a0f0']</code>. Python applies the list, runs its checks, and commits the result to the project's Git repository.</p>
+<p>This helps with repeats in two ways. First, some verbs are naturally repeatable: setting the same text on the same element twice leaves the page exactly as setting it once. Others, like inserting a block, are not, and having them as named verbs makes that difference visible instead of buried in a rewritten page. Second, every turn is its own commit, so when something does go wrong, undo is a Git restore to a known version, not a reconstruction from memory.</p>
+<h2>6. The mirror rule: never claim what did not happen</h2>
+<p>Rule 1 stops false failures. Its mirror stops false successes. One of the deterministic checks on every save is that <em>a claim of success needs a real change</em>: the assistant never reports an edit that did not happen. And only the server decides whether a turn is saved, never the model's description of what it did.</p>
+<p>Together the two rules give the caller a simple contract. "Done" means the change exists. "Not done" means it does not. A model can safely make decisions on that, including the decision to try again.</p>
+<h2>7. Check the whole path from the outside</h2>
+<p>Unit tests can tell you each step works. They cannot tell you the sequence still works when real sign-in, real networking and a real client are involved. So every five minutes a probe walks the AI connector end to end, from discovery and sign-in to a real tool call, and emails an incident report on any failure and on recovery.</p>
+<h2>A short checklist</h2>
+<p>If you are exposing write tools to agents, these are the questions I would ask of each one:</p>
+<ul>
+<li>If this call succeeds on the server but the response is lost, what does a retry do?</li>
+<li>Is the last step bookkeeping? If so, does a bookkeeping failure still return "done"?</li>
+<li>Can two calls for the same resource run at once, or does a lock make one wait?</li>
+<li>Is a repeat based on the current state, or on a copy that might be stale?</li>
+<li>Can the tool ever report success for a change that did not happen?</li>
+<li>Is there any server-side session state a restart would lose?</li>
+</ul>
+<p>None of this requires an exotic protocol. It requires writing down, per tool, what "done" means, and then making the code tell the caller the truth about it.</p>
+<hr />
+<p><em>Disclosure: I work on Orivox, the product described in this post. You can see it at <a href="https://www.orivox.pro/">https://www.orivox.pro/</a>.</em></p>
+</article><p><a href="/">&larr; Notes by Zahi Raifer</a></p></body></html>
