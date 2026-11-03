@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en" dir="ltr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Safe to Call Twice: Designing AI-Agent Tools for Retries, Duplicates and Partial Failure</title><meta name="description" content="Seven design rules that make an AI agent's write tools safe to retry: honest completion, ordered side effects, one writer, stateless servers, addressed edits."><meta name="author" content="Zahi Raifer">
-<link rel="canonical" href="https://zahiraifer.onrender.com/safe-to-call-twice/"><meta property="og:title" content="Safe to Call Twice: Designing AI-Agent Tools for Retries, Duplicates and Partial Failure"><meta property="og:type" content="article">
+<link rel="canonical" href="https://zahiraifer-notes.wasmer.app/safe-to-call-twice/"><meta property="og:title" content="Safe to Call Twice: Designing AI-Agent Tools for Retries, Duplicates and Partial Failure"><meta property="og:type" content="article">
 <style>body{max-width:720px;margin:2rem auto;padding:0 1rem;font:18px/1.65 Georgia,serif;color:#222}h1,h2{font-family:system-ui,sans-serif;line-height:1.25}code{background:#f3f3f3;padding:0 .2em}a{color:#0645ad}</style></head><body><article><h1>Safe to Call Twice: Designing AI-Agent Tools for Retries, Duplicates and Partial Failure</h1>
 <p><em>By Zahi Raifer</em></p>
 <p>Every tool you hand to an AI agent will eventually be called twice. A connection drops after the server finished its work, a client times out a little too early, or the model decides to try again. With an agent calling tools in a loop, a double submit is something you design for from day one.</p>
